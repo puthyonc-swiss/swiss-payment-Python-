@@ -1,0 +1,4 @@
+bakong-khqr
+fastapi
+uvicorn
+python-dotenv
