@@ -12,7 +12,8 @@ Endpoints:
 
 import os
 import time
-import httpx
+import urllib.request
+import json as _json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -152,17 +153,20 @@ def check_payment(req: CheckRequest):
                 payer_name = result.get("fromFullName", "") or result.get("payer_name", "") or ""
                 amount     = result.get("amount", 0) or 0
 
-            response = httpx.post(
+            payload = _json.dumps({
+                "secret":    BOT_SECRET,
+                "txnId":     md5,
+                "payerName": payer_name,
+                "amount":    amount,
+            }).encode("utf-8")
+            req_obj = urllib.request.Request(
                 APPROVE_PAYMENT_URL,
-                json={
-                    "secret":    BOT_SECRET,
-                    "txnId":     md5,
-                    "payerName": payer_name,
-                    "amount":    amount,
-                },
-                timeout=5.0,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
-            print(f"✅ Saved to Firestore | md5: {md5} | status: {response.status_code}")
+            with urllib.request.urlopen(req_obj, timeout=5) as resp:
+                print(f"✅ Saved to Firestore | md5: {md5} | status: {resp.status}")
         except Exception as firebase_err:
             # Do NOT fail payment if Firestore save fails
             print(f"⚠️ Firestore save error: {str(firebase_err)}")
