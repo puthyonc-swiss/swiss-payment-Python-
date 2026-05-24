@@ -12,6 +12,7 @@ Endpoints:
 
 import os
 import time
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -25,6 +26,10 @@ RBK_TOKEN     = os.getenv("RBK_TOKEN", "")
 BAKONG_ID     = os.getenv("BAKONG_ID",     "puthyon_chandara@bkrt")
 MERCHANT_NAME = os.getenv("MERCHANT_NAME", "Swiss System")
 MERCHANT_CITY = os.getenv("MERCHANT_CITY", "Phnom Penh")
+
+# ── ADDED: Firebase Function URL ──────────────────────────────
+APPROVE_PAYMENT_URL = "https://approvepayment-dujizfz2la-uc.a.run.app"
+BOT_SECRET          = "swisssystem2026"
 
 # ── FastAPI App ───────────────────────────────────────────────
 app = FastAPI(title="Swiss System Payment Backend")
@@ -46,7 +51,6 @@ class CheckRequest(BaseModel):
 
 # ─────────────────────────────────────────────────────────────
 # GET /
-# Health check
 # ─────────────────────────────────────────────────────────────
 @app.get("/")
 def health_check():
@@ -72,13 +76,9 @@ def generate_payment(req: GenerateRequest):
                 "message": "Invalid amount. Must be greater than 0.",
             }
 
-        # Initialize KHQR with RBK token
-        khqr = KHQR(RBK_TOKEN)
-
-        # Unique bill number → forces dynamic QR
+        khqr        = KHQR(RBK_TOKEN)
         bill_number = f"TRX{int(time.time() * 1000)}"
 
-        # Generate QR
         qr = khqr.create_qr(
             bank_account=BAKONG_ID,
             merchant_name=MERCHANT_NAME,
@@ -88,7 +88,7 @@ def generate_payment(req: GenerateRequest):
             bill_number=bill_number,
             store_label="Swiss System",
             terminal_label="Tournament",
-            static=False,  # dynamic QR ← required for payment check
+            static=False,
         )
 
         if not qr:
@@ -97,9 +97,7 @@ def generate_payment(req: GenerateRequest):
                 "message": "Failed to generate KHQR.",
             }
 
-        # Generate MD5 hash
         md5 = khqr.generate_md5(qr)
-
         print(f"✅ KHQR generated | amount: ${amount} | md5: {md5}")
 
         return {
@@ -120,10 +118,6 @@ def generate_payment(req: GenerateRequest):
 # POST /api/payment/check
 # Body: { "md5": "abc123..." }
 # Returns: { "success": true, "paid": true/false }
-#
-# From docs: check_payment() returns:
-#   "UNPAID" → not paid yet
-#   object   → payment info (paid!)
 # ─────────────────────────────────────────────────────────────
 @app.post("/api/payment/check")
 def check_payment(req: CheckRequest):
@@ -137,15 +131,12 @@ def check_payment(req: CheckRequest):
                 "message": "MD5 hash is required.",
             }
 
-        # Initialize KHQR with RBK token
-        khqr = KHQR(RBK_TOKEN)
-
-        # Check payment via Bakong Relay
+        khqr   = KHQR(RBK_TOKEN)
         result = khqr.check_payment(md5)
 
         print(f"💳 Payment check | md5: {md5} | result: {result}")
 
-        # "UNPAID" string = not paid yet
+        # "UNPAID" = not paid yet
         if result == "UNPAID" or result is None:
             return {
                 "success": True,
@@ -153,7 +144,30 @@ def check_payment(req: CheckRequest):
                 "message": "Payment not found yet.",
             }
 
-        # Any other result = paid!
+        # ── ADDED: Save to Firestore when paid ───────────────
+        try:
+            payer_name = ""
+            amount     = 0
+            if isinstance(result, dict):
+                payer_name = result.get("fromFullName", "") or result.get("payer_name", "") or ""
+                amount     = result.get("amount", 0) or 0
+
+            response = httpx.post(
+                APPROVE_PAYMENT_URL,
+                json={
+                    "secret":    BOT_SECRET,
+                    "txnId":     md5,
+                    "payerName": payer_name,
+                    "amount":    amount,
+                },
+                timeout=5.0,
+            )
+            print(f"✅ Saved to Firestore | md5: {md5} | status: {response.status_code}")
+        except Exception as firebase_err:
+            # Do NOT fail payment if Firestore save fails
+            print(f"⚠️ Firestore save error: {str(firebase_err)}")
+        # ── END ADDED ─────────────────────────────────────────
+
         return {
             "success": True,
             "paid":    True,
